@@ -98,16 +98,16 @@
     </div>
   </header>
 
-  <!-- First run: where to send bills, and the phone's own token. -->
+  <!-- First run. iOS drops the token from the address when it saves a home
+       screen icon, so the app is connected by pasting the setup link in. -->
   <section id="setup" class="card" hidden>
     <h2>Connect this phone</h2>
-    <p class="help" style="margin:0 0 14px">Open the setup link from the shop, or paste the two values below. You only do this once.</p>
-    <label><div class="label">Bills endpoint</div>
-      <input id="s-endpoint" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="https://….supabase.co/functions/v1/bills"></label>
-    <label><div class="label">Phone token</div>
-      <input id="s-token" type="password" autocapitalize="off" autocorrect="off" placeholder="From openssl rand -hex 32"></label>
+    <p class="help" style="margin:0 0 14px">Copy the setup link from the shop, then tap Paste. You only do this once.</p>
+    <button class="primary" id="s-paste" type="button">Paste setup link</button>
+    <label style="margin:14px 0"><div class="label">Or paste it here</div>
+      <input id="s-link" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://mfba.github.io/…#e=…&amp;t=…"></label>
     <div id="s-error" class="banner warn" hidden></div>
-    <button class="primary" id="s-save">Connect</button>
+    <button class="primary" id="s-save" type="button">Connect</button>
   </section>
 
   <section id="app" hidden>
@@ -224,19 +224,34 @@
   function showSetup(message) {
     $('app').hidden = true
     $('setup').hidden = false
-    $('s-endpoint').value = store.get(KEY.endpoint, '')
     $('s-error').hidden = !message
     $('s-error').textContent = message || ''
   }
 
-  $('s-save').addEventListener('click', async () => {
-    const endpoint = $('s-endpoint').value.trim(), token = $('s-token').value.trim()
-    if (!/^https:\/\//.test(endpoint) || !token) return showSetup('Both values are needed, and the endpoint must start with https://')
+  /** Takes the whole setup link, and pulls the endpoint and token out of it. */
+  async function connectWith(text) {
+    const value = (text || '').trim()
+    const hash = value.includes('#') ? value.slice(value.indexOf('#') + 1) : ''
+    const params = new URLSearchParams(hash)
+    const endpoint = params.get('e'), token = params.get('t')
+    if (!endpoint || !/^https:\/\//.test(endpoint) || !token) {
+      return showSetup('That is not the setup link. Copy the whole link again and paste it.')
+    }
     store.set(KEY.endpoint, endpoint)
     store.set(KEY.token, token)
+    $('s-link').value = ''
     $('s-save').disabled = true
     try { await boot() } finally { $('s-save').disabled = false }
+  }
+
+  $('s-paste').addEventListener('click', async () => {
+    try {
+      await connectWith(await navigator.clipboard.readText())
+    } catch {
+      showSetup('The phone would not hand over the clipboard. Long press the box below, Paste, then Connect.')
+    }
   })
+  $('s-save').addEventListener('click', () => void connectWith($('s-link').value))
 
   $('disconnect').addEventListener('click', () => {
     Object.values(KEY).forEach(store.del)
