@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-title" content="Canary Bills">
 <meta name="theme-color" content="#faf7f5">
 <title>Canary Bills</title>
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-512.png">
 <style>
   /*
    * Canary Bills, the phone side of the Bills screen.
@@ -36,6 +38,10 @@
   }
   main { max-width: 480px; margin: 0 auto; }
   h1 { font-size: 26px; margin: 4px 0 2px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .brand .sub { margin: 0; }
+  /* The logo is drawn on white. Multiply drops the white into the page colour. */
+  .brand img { width: 84px; height: auto; mix-blend-mode: multiply; }
   .sub { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
   .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 18px; padding: 16px; margin-bottom: 16px; }
   label { display: block; margin-bottom: 14px; }
@@ -84,8 +90,13 @@
 </head>
 <body>
 <main>
-  <h1>Canary Bills</h1>
-  <p class="sub" id="who">Every rupee that leaves the shop, from wherever you are.</p>
+  <header class="brand">
+    <img src="logo.png" alt="Canary">
+    <div>
+      <h1>Canary Bills</h1>
+      <p class="sub" id="who">Every rupee that leaves the shop, from wherever you are.</p>
+    </div>
+  </header>
 
   <!-- First run: where to send bills, and the phone's own token. -->
   <section id="setup" class="card" hidden>
