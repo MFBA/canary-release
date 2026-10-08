@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Canary Bills">
+<meta name="theme-color" content="#faf7f5">
+<title>Canary Bills</title>
+<style>
+  /*
+   * Canary Bills, the phone side of the Bills screen.
+   *
+   * One file, no build, no framework, so it can be hosted anywhere static and
+   * added to the iPhone home screen. It talks to supabase/functions/bills and
+   * nothing else. A bill added here waits in the cloud until the shop machine
+   * is online, then is filed there like any bill typed at the counter.
+   *
+   * Signal at the market is bad, so a bill that cannot be sent is kept on the
+   * phone and retried. Each bill gets its id here, which is what makes a retry
+   * land on the same row instead of booking it twice.
+   */
+  :root {
+    --orange: #e47c35; --orange-hover: #cf6d29; --orange-tint: #fdf0e7;
+    --red: #ea5537; --red-tint: #fdece8; --green: #2f8f5b; --green-tint: #e8f5ee;
+    --ink: #2d3333; --muted: #6b7272; --faint: #9aa0a0;
+    --canvas: #faf7f5; --surface: #ffffff; --hairline: rgba(45, 51, 51, 0.1);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--canvas); color: var(--ink); }
+  body {
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+  .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 18px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; margin-bottom: 14px; }
+  .label { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); margin-bottom: 6px; }
+  .label .hint { text-transform: none; letter-spacing: 0; font-weight: 500; }
+  input, select, textarea {
+    width: 100%; font: inherit; font-size: 17px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px;
+    padding: 12px 14px; outline: none; -webkit-appearance: none; appearance: none;
+  }
+  select { background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%); background-position: calc(100% - 20px) 50%, calc(100% - 14px) 50%; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 36px; }
+  input:focus, select:focus, textarea:focus { border-color: var(--orange); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .affix { position: relative; }
+  .affix span { position: absolute; top: 50%; transform: translateY(-50%); color: var(--faint); font-size: 15px; pointer-events: none; }
+  .affix .pre { left: 14px; } .affix .post { right: 14px; }
+  .affix .has-pre { padding-left: 40px; } .affix .has-post { padding-right: 56px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .help { font-size: 13px; color: var(--faint); margin-top: 6px; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 14px; cursor: pointer;
+    padding: 15px 16px; width: 100%; font-size: 17px;
+  }
+  .primary { background: var(--orange); color: #fff; }
+  .primary:active { background: var(--orange-hover); }
+  .primary:disabled { background: #c9cccc; }
+  .ghost { background: transparent; color: var(--muted); font-weight: 500; font-size: 14px; padding: 10px; }
+  .banner { border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-bottom: 14px; }
+  .banner.ok { background: var(--green-tint); color: var(--green); }
+  .banner.warn { background: var(--red-tint); color: var(--red); }
+  .banner.info { background: var(--orange-tint); color: var(--orange-hover); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid var(--hairline); }
+  li:first-child { border-top: 0; }
+  li .what { min-width: 0; }
+  li .name { font-weight: 600; }
+  li .meta { font-size: 13px; color: var(--faint); }
+  li .amt { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 8px; margin-top: 3px; }
+  .pill.done { background: var(--green-tint); color: var(--green); }
+  .pill.wait { background: var(--orange-tint); color: var(--orange-hover); }
+  .pill.queued { background: var(--red-tint); color: var(--red); }
+  h2 { font-size: 15px; margin: 0 0 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Canary Bills</h1>
+  <p class="sub" id="who">Every rupee that leaves the shop, from wherever you are.</p>
+
+  <!-- First run: where to send bills, and the phone's own token. -->
+  <section id="setup" class="card" hidden>
+    <h2>Connect this phone</h2>
+    <p class="help" style="margin:0 0 14px">Open the setup link from the shop, or paste the two values below. You only do this once.</p>
+    <label><div class="label">Bills endpoint</div>
+      <input id="s-endpoint" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="https://….supabase.co/functions/v1/bills"></label>
+    <label><div class="label">Phone token</div>
+      <input id="s-token" type="password" autocapitalize="off" autocorrect="off" placeholder="From openssl rand -hex 32"></label>
+    <div id="s-error" class="banner warn" hidden></div>
+    <button class="primary" id="s-save">Connect</button>
+  </section>
+
+  <section id="app" hidden>
+    <div id="status" class="banner" hidden></div>
+
+    <form id="form" class="card" autocomplete="off">
+      <label><div class="label">Date</div>
+        <input id="f-date" type="date"></label>
+
+      <label><div class="label">Category</div>
+        <select id="f-category"><option value="">Choose…</option></select></label>
+
+      <div class="row">
+        <label><div class="label">Quantity</div>
+          <div class="affix"><input id="f-qty" class="num has-post" inputmode="decimal" placeholder="0"><span class="post" id="f-unit-label">kg</span></div></label>
+        <label><div class="label">Unit</div>
+          <select id="f-unit"></select></label>
+      </div>
+
+      <label><div class="label"><span>Rate per <span id="f-rate-unit">kg</span></span></div>
+        <div class="affix"><span class="pre">Rs</span><input id="f-rate" class="num has-pre" inputmode="decimal" placeholder="0"></div>
+        <div class="help" id="f-rate-help" hidden></div></label>
+
+      <label><div class="label">Amount</div>
+        <div class="affix"><span class="pre">Rs</span><input id="f-amount" class="num has-pre" inputmode="decimal" placeholder="0"></div>
+        <div class="help" id="f-amount-help" hidden></div></label>
+
+      <label><div class="label">Note <span class="hint">optional</span></div>
+        <input id="f-note" maxlength="200" placeholder="Anything worth remembering"></label>
+
+      <button class="primary" id="f-submit" type="submit" disabled>Add bill</button>
+    </form>
+
+    <section class="card">
+      <h2>Recent bills from this phone</h2>
+      <ul id="recent"><li><span class="meta">Nothing yet.</span></li></ul>
+    </section>
+
+    <button class="ghost" id="disconnect" type="button">Disconnect this phone</button>
+  </section>
+</main>
+
+<script>
+(() => {
+  const UNITS = ['kg', 'gram', 'litre', 'dozen', 'piece', 'packet', 'bag', 'tin', 'carton', 'crate', 'bottle']
+  const KEY = { endpoint: 'canary.endpoint', token: 'canary.token', categories: 'canary.categories', queue: 'canary.queue', phone: 'canary.phone' }
+  const $ = (id) => document.getElementById(id)
+
+  // Storage can throw in private mode. A phone that cannot remember is still
+  // a phone that can send, it just asks again next time.
+  const store = {
+    get(key, fallback) { try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v) } catch { return fallback } },
+    set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)) } catch {} },
+    del(key) { try { localStorage.removeItem(key) } catch {} }
+  }
+
+  const rupees = (paisa) => 'Rs ' + (paisa / 100).toLocaleString('en-PK', { maximumFractionDigits: 2 })
+  const decimalOnly = (value) => {
+    const cleaned = value.replace(/[^\d.]/g, '')
+    const dot = cleaned.indexOf('.')
+    return dot === -1 ? cleaned : cleaned.slice(0, dot + 1) + cleaned.slice(dot + 1).replace(/\./g, '')
+  }
+  const toNumber = (value) => (value.trim() === '' ? null : (Number.isFinite(Number(value)) ? Number(value) : null))
+  const localToday = () => {
+    const now = new Date()
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  }
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = crypto.getRandomValues(new Uint8Array(1))[0] & 15
+      return (c === 'x' ? r : (r & 3) | 8).toString(16)
+    }))
+
+  // ---------------------------------------------------------------- network
+
+  async function call(body) {
+    const response = await fetch(store.get(KEY.endpoint, ''), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-canary-phone-token': store.get(KEY.token, '') },
+      body: JSON.stringify(body)
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const error = new Error(data.error || `The cloud said ${response.status}`)
+      error.status = response.status
+      throw error
+    }
+    return data
+  }
+
+  // ---------------------------------------------------------------- setup
+
+  // A setup link carries both values in the fragment, which never leaves the
+  // phone in a request. It is read once and wiped from the address bar.
+  function readSetupLink() {
+    const params = new URLSearchParams(location.hash.slice(1))
+    const endpoint = params.get('e'), token = params.get('t')
+    if (endpoint && token) {
+      store.set(KEY.endpoint, endpoint)
+      store.set(KEY.token, token)
+      history.replaceState(null, '', location.pathname + location.search)
+    }
+  }
+
+  function showSetup(message) {
+    $('app').hidden = true
+    $('setup').hidden = false
+    $('s-endpoint').value = store.get(KEY.endpoint, '')
+    $('s-error').hidden = !message
+    $('s-error').textContent = message || ''
+  }
+
+  $('s-save').addEventListener('click', async () => {
+    const endpoint = $('s-endpoint').value.trim(), token = $('s-token').value.trim()
+    if (!/^https:\/\//.test(endpoint) || !token) return showSetup('Both values are needed, and the endpoint must start with https://')
+    store.set(KEY.endpoint, endpoint)
+    store.set(KEY.token, token)
+    $('s-save').disabled = true
+    try { await boot() } finally { $('s-save').disabled = false }
+  })
+
+  $('disconnect').addEventListener('click', () => {
+    Object.values(KEY).forEach(store.del)
+    showSetup()
+  })
+
+  // ---------------------------------------------------------------- form
+
+  let categories = store.get(KEY.categories, [])
+  const draft = { amountEdited: false, rateEdited: false }
+
+  UNITS.forEach((unit) => $('f-unit').add(new Option(unit, unit)))
+
+  function renderCategories() {
+    const select = $('f-category'), current = select.value
+    select.length = 1
+    categories.forEach((category) => select.add(new Option(category.name, category.id)))
+    select.value = current
+  }
+
+  const categoryById = (id) => categories.find((category) => category.id === id)
+
+  function setUnit(unit) {
+    $('f-unit').value = unit
+    $('f-unit-label').textContent = unit
+    $('f-rate-unit').textContent = unit
+  }
+
+  function recompute() {
+    const qty = toNumber($('f-qty').value), rate = toNumber($('f-rate').value)
+    const computed = qty != null && rate != null ? Math.round(qty * rate * 100) : null
+    if (!draft.amountEdited && computed != null) $('f-amount').value = String(computed / 100)
+
+    const amount = toNumber($('f-amount').value)
+    const help = $('f-amount-help')
+    if (draft.amountEdited && computed != null && amount != null && Math.round(amount * 100) !== computed) {
+      help.hidden = false
+      help.textContent = `Quantity and rate come to ${rupees(computed)}. Saving what you typed.`
+    } else if (!draft.amountEdited && computed != null) {
+      help.hidden = false
+      help.textContent = 'Worked out from quantity and rate. Type over it if the slip says something else.'
+    } else help.hidden = true
+
+    $('f-submit').disabled = !($('f-category').value && amount != null && amount > 0)
+  }
+
+  $('f-category').addEventListener('change', () => {
+    const category = categoryById($('f-category').value)
+    draft.rateEdited = false
+    draft.amountEdited = false
+    $('f-rate').value = ''
+    const help = $('f-rate-help')
+    help.hidden = true
+    if (category) {
+      setUnit(category.unit || (category.last && category.last.unit) || 'kg')
+      // The rate it was last bought at, so only the number that moved is typed.
+      if (category.last) {
+        $('f-rate').value = String(category.last.ratePaisa / 100)
+        help.hidden = false
+        help.textContent = `Last time's price, from ${category.last.businessDate}. Type over it if it has moved.`
+      }
+    }
+    recompute()
+  })
+  $('f-unit').addEventListener('change', () => setUnit($('f-unit').value))
+  $('f-qty').addEventListener('input', (e) => { e.target.value = decimalOnly(e.target.value); recompute() })
+  $('f-rate').addEventListener('input', (e) => { e.target.value = decimalOnly(e.target.value); draft.rateEdited = true; draft.amountEdited = false; recompute() })
+  $('f-amount').addEventListener('input', (e) => { e.target.value = decimalOnly(e.target.value); draft.amountEdited = true; recompute() })
+
+  function resetForm() {
+    $('f-category').value = ''
+    $('f-qty').value = ''
+    $('f-rate').value = ''
+    $('f-amount').value = ''
+    $('f-note').value = ''
+    $('f-rate-help').hidden = true
+    draft.amountEdited = false
+    draft.rateEdited = false
+    recompute()
+  }
+
+  $('form').addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const qty = toNumber($('f-qty').value), rate = toNumber($('f-rate').value)
+    const usable = qty != null && qty > 0 && rate != null
+    const bill = {
+      id: uuid(),
+      businessDate: $('f-date').value || localToday(),
+      categoryId: $('f-category').value,
+      amountPaisa: Math.round(toNumber($('f-amount').value) * 100),
+      quantity: usable ? qty : null,
+      unit: usable ? $('f-unit').value : null,
+      ratePaisa: usable ? Math.round(rate * 100) : null,
+      note: $('f-note').value.trim() || null
+    }
+    // Queued first, sent second. If the phone loses signal or is locked mid
+    // request, the bill is still on it and goes on the next try.
+    store.set(KEY.queue, [...store.get(KEY.queue, []), bill])
+    const name = (categoryById(bill.categoryId) || {}).name || 'Bill'
+    resetForm()
+    status('info', `${name} ${rupees(bill.amountPaisa)} saved. Sending…`)
+    await flush()
+  })
+
+  // ---------------------------------------------------------------- queue
+
+  let flushing = false
+  async function flush() {
+    if (flushing) return
+    flushing = true
+    try {
+      let queue = store.get(KEY.queue, [])
+      while (queue.length) {
+        const bill = queue[0]
+        try {
+          await call({ action: 'add', bill })
+        } catch (error) {
+          // A refusal will not get better by retrying. Anything else is the
+          // network, and the bill waits.
+          if (error.status === 400) {
+            status('warn', `A bill was refused: ${error.message}. It has been dropped, please add it again.`)
+          } else {
+            status('warn', `No signal. ${queue.length} ${queue.length === 1 ? 'bill is' : 'bills are'} saved on this phone and will send on their own.`)
+            break
+          }
+        }
+        queue = store.get(KEY.queue, []).filter((queued) => queued.id !== bill.id)
+        store.set(KEY.queue, queue)
+        if (!queue.length) status('ok', 'Sent. The shop machine files it next time it is online.')
+      }
+    } finally {
+      flushing = false
+      await loadRecent()
+    }
+  }
+
+  function status(tone, text) {
+    const el = $('status')
+    el.className = `banner ${tone}`
+    el.textContent = text
+    el.hidden = false
+  }
+
+  async function loadRecent() {
+    const queued = store.get(KEY.queue, []).map((bill) => ({
+      id: bill.id, category_id: bill.categoryId, amount_paisa: bill.amountPaisa,
+      business_date: bill.businessDate, quantity: bill.quantity, unit: bill.unit, queued: true
+    }))
+    let sent = []
+    try { sent = (await call({ action: 'recent' })).bills || [] } catch {}
+    const rows = [...queued, ...sent]
+    const list = $('recent')
+    list.replaceChildren()
+    if (!rows.length) {
+      list.innerHTML = '<li><span class="meta">Nothing yet.</span></li>'
+      return
+    }
+    for (const row of rows) {
+      const li = document.createElement('li')
+      const what = document.createElement('div'); what.className = 'what'
+      const name = document.createElement('div'); name.className = 'name'
+      name.textContent = (categoryById(row.category_id) || {}).name || 'Bill'
+      const meta = document.createElement('div'); meta.className = 'meta'
+      meta.textContent = row.business_date + (row.quantity ? ` · ${row.quantity} ${row.unit || ''}` : '')
+      what.append(name, meta)
+      const amt = document.createElement('div'); amt.className = 'amt'
+      amt.textContent = rupees(Number(row.amount_paisa))
+      const pill = document.createElement('div')
+      if (row.queued) { pill.className = 'pill queued'; pill.textContent = 'On this phone' }
+      else if (row.picked_up_at) { pill.className = 'pill done'; pill.textContent = 'In the books' }
+      else { pill.className = 'pill wait'; pill.textContent = 'Waiting for shop' }
+      amt.append(document.createElement('br'), pill)
+      li.append(what, amt)
+      list.append(li)
+    }
+  }
+
+  // ---------------------------------------------------------------- boot
+
+  async function boot() {
+    if (!store.get(KEY.endpoint, '') || !store.get(KEY.token, '')) return showSetup()
+    try {
+      const setup = await call({ action: 'setup' })
+      categories = setup.categories || []
+      store.set(KEY.categories, categories)
+      store.set(KEY.phone, setup.phone)
+    } catch (error) {
+      if (error.status === 403 || error.status === 401) return showSetup('This phone is not registered. Check the token.')
+      // Offline: run on the categories from last time.
+      if (!categories.length) return showSetup('Could not reach the cloud, and this phone has not connected before.')
+    }
+    $('setup').hidden = true
+    $('app').hidden = false
+    const phone = store.get(KEY.phone, null)
+    if (phone) $('who').textContent = `Adding bills as ${phone}.`
+    renderCategories()
+    if (!$('f-date').value) $('f-date').value = localToday()
+    recompute()
+    await flush()
+  }
+
+  // Coming back to the app, or back into signal, is when a waiting bill goes.
+  window.addEventListener('online', () => void flush())
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void flush() })
+
+  readSetupLink()
+  void boot()
+})()
+</script>
+</body>
+</html>
