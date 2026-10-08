@@ -74,8 +74,22 @@
   .banner.warn { background: var(--red-tint); color: var(--red); }
   .banner.info { background: var(--orange-tint); color: var(--orange-hover); }
   ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid var(--hairline); }
+  li { position: relative; overflow: hidden; border-top: 1px solid var(--hairline); }
   li:first-child { border-top: 0; }
+  li.empty { padding: 11px 0; }
+  /* Swipe left on a row to uncover Delete. The row slides, the button stays. */
+  li .row {
+    position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 12px;
+    padding: 11px 0; background: var(--surface); touch-action: pan-y;
+    transition: transform .2s ease;
+  }
+  li .row.dragging { transition: none; }
+  li .del {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 88px; border-radius: 0;
+    background: var(--red); color: #fff; font-size: 15px; padding: 0;
+  }
+  .pill.gone { background: var(--red-tint); color: var(--red); }
+  .swipe-hint { font-size: 12px; color: var(--faint); margin: 8px 0 0; }
   li .what { min-width: 0; }
   li .name { font-weight: 600; }
   li .meta { font-size: 13px; color: var(--faint); }
@@ -143,7 +157,8 @@
 
     <section class="card">
       <h2>Recent bills from this phone</h2>
-      <ul id="recent"><li><span class="meta">Nothing yet.</span></li></ul>
+      <ul id="recent"><li class="empty"><span class="meta">Nothing yet.</span></li></ul>
+      <p class="swipe-hint" id="swipe-hint" hidden>Entered one wrongly? Swipe it left to delete it.</p>
     </section>
 
     <button class="ghost" id="disconnect" type="button">Disconnect this phone</button>
@@ -402,31 +417,105 @@
     }))
     let sent = []
     try { sent = (await call({ action: 'recent' })).bills || [] } catch {}
+    // A voided bill is gone once it never reached the books, or once the shop
+    // machine has taken it back out. Until then it stays, marked as going.
+    sent = sent.filter((row) => !row.voided_at || (row.picked_up_at && !row.void_picked_up_at))
     const rows = [...queued, ...sent]
     const list = $('recent')
     list.replaceChildren()
+    $('swipe-hint').hidden = !rows.some((row) => !row.voided_at)
     if (!rows.length) {
-      list.innerHTML = '<li><span class="meta">Nothing yet.</span></li>'
+      list.innerHTML = '<li class="empty"><span class="meta">Nothing yet.</span></li>'
       return
     }
-    for (const row of rows) {
-      const li = document.createElement('li')
-      const what = document.createElement('div'); what.className = 'what'
-      const name = document.createElement('div'); name.className = 'name'
-      name.textContent = (categoryById(row.category_id) || {}).name || 'Bill'
-      const meta = document.createElement('div'); meta.className = 'meta'
-      meta.textContent = row.business_date + (row.quantity ? ` · ${row.quantity} ${row.unit || ''}` : '')
-      what.append(name, meta)
-      const amt = document.createElement('div'); amt.className = 'amt'
-      amt.textContent = rupees(Number(row.amount_paisa))
-      const pill = document.createElement('div')
-      if (row.queued) { pill.className = 'pill queued'; pill.textContent = 'On this phone' }
-      else if (row.picked_up_at) { pill.className = 'pill done'; pill.textContent = 'In the books' }
-      else { pill.className = 'pill wait'; pill.textContent = 'Waiting for shop' }
-      amt.append(document.createElement('br'), pill)
-      li.append(what, amt)
-      list.append(li)
+    for (const row of rows) list.append(recentRow(row))
+  }
+
+  function recentRow(row) {
+    const li = document.createElement('li')
+    const content = document.createElement('div'); content.className = 'row'
+    const what = document.createElement('div'); what.className = 'what'
+    const name = document.createElement('div'); name.className = 'name'
+    name.textContent = (categoryById(row.category_id) || {}).name || 'Bill'
+    const meta = document.createElement('div'); meta.className = 'meta'
+    meta.textContent = row.business_date + (row.quantity ? ` · ${row.quantity} ${row.unit || ''}` : '')
+    what.append(name, meta)
+    const amt = document.createElement('div'); amt.className = 'amt'
+    amt.textContent = rupees(Number(row.amount_paisa))
+    const pill = document.createElement('div')
+    if (row.voided_at) { pill.className = 'pill gone'; pill.textContent = 'Removing from books' }
+    else if (row.queued) { pill.className = 'pill queued'; pill.textContent = 'On this phone' }
+    else if (row.picked_up_at) { pill.className = 'pill done'; pill.textContent = 'In the books' }
+    else { pill.className = 'pill wait'; pill.textContent = 'Waiting for shop' }
+    amt.append(document.createElement('br'), pill)
+    content.append(what, amt)
+    li.append(content)
+    if (!row.voided_at) makeSwipeable(li, content, () => voidBill(row))
+    return li
+  }
+
+  /**
+   * Swipe left to uncover Delete, tap it to delete. Two moves, so a thumb
+   * brushing the list while scrolling cannot remove a bill on its own.
+   */
+  const OPEN = -88
+  let openRow = null
+  function makeSwipeable(li, content, onDelete) {
+    const del = document.createElement('button')
+    del.type = 'button'; del.className = 'del'; del.textContent = 'Delete'
+    del.addEventListener('click', async () => {
+      del.disabled = true
+      del.textContent = '…'
+      await onDelete()
+    })
+    li.prepend(del)
+
+    let startX = 0, startY = 0, base = 0, dx = 0, tracking = false, horizontal = null
+    const close = () => { content.style.transform = ''; if (openRow === content) openRow = null }
+
+    content.addEventListener('pointerdown', (e) => {
+      if (openRow && openRow !== content) { openRow.style.transform = ''; openRow = null }
+      startX = e.clientX; startY = e.clientY; dx = 0; horizontal = null; tracking = true
+      base = openRow === content ? OPEN : 0
+    })
+    content.addEventListener('pointermove', (e) => {
+      if (!tracking) return
+      const mx = e.clientX - startX, my = e.clientY - startY
+      // Decide once whether this is a swipe or a scroll, and stick with it.
+      if (horizontal === null && Math.abs(mx) + Math.abs(my) > 8) horizontal = Math.abs(mx) > Math.abs(my)
+      if (!horizontal) return
+      dx = Math.min(0, Math.max(OPEN - 30, base + mx))
+      content.classList.add('dragging')
+      content.style.transform = `translateX(${dx}px)`
+    })
+    const end = () => {
+      if (!tracking) return
+      tracking = false
+      content.classList.remove('dragging')
+      if (!horizontal) { if (base === OPEN) close(); return }
+      if (dx < OPEN / 2) { content.style.transform = `translateX(${OPEN}px)`; openRow = content }
+      else close()
     }
+    content.addEventListener('pointerup', end)
+    content.addEventListener('pointercancel', end)
+  }
+
+  async function voidBill(row) {
+    // Never left the phone, so there is nothing to tell the cloud.
+    if (row.queued) {
+      store.set(KEY.queue, store.get(KEY.queue, []).filter((bill) => bill.id !== row.id))
+      status('ok', 'Deleted from this phone.')
+      return loadRecent()
+    }
+    try {
+      await call({ action: 'void', id: row.id })
+      status('ok', row.picked_up_at
+        ? 'Deleted. The shop machine takes it out of the books next time it is online.'
+        : 'Deleted before the shop machine filed it.')
+    } catch (error) {
+      status('warn', error.status ? `Could not delete: ${error.message}` : 'No signal. Deleting needs signal, try again in a moment.')
+    }
+    await loadRecent()
   }
 
   // ---------------------------------------------------------------- boot
